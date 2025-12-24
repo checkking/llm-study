@@ -2,3 +2,5 @@ langchain
 langchain-openai
 langchain-core
 langchain-community
+requests
+sqlalchemy

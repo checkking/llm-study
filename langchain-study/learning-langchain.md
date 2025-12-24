@@ -575,3 +575,11 @@ print()
 messages_list.append(AIMessage(content=assistant_reply))
 
 ```
+
+
+## Langchain 接入工具基本流程
+### LangChain接入内置工具
+LangChain生态从建立起就内置集成了非常多的实用工具，开发者可以快速调用这些工具完成更加复杂工作流的开发。可访问官方文档[Tools and toolkits](https://docs.langchain.com/oss/python/integrations/tools)查看LangChain内置工具列表。LangChain内置工具可分为Search在线搜索工具、Code Interpreter代码解释器工具、Productivit自动化工具、WebBrowsing浏览器自动化工具、Database数据库工具等多种类别。
+
+接下来的例子使用SQLDatabase Toolkit接入数据库工具。
+
