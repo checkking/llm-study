@@ -583,3 +583,334 @@ LangChain生态从建立起就内置集成了非常多的实用工具，开发�
 
 接下来的例子使用SQLDatabase Toolkit接入数据库工具。
 
+SQLDatabaseToolkit 中的工具旨在与 SQL 数据库进行交互。
+一个常见的应用场景是使智能体能够利用关系型数据库中的数据来回答问题，甚至可能以迭代的方式进行数据查询和分析。
+
+### 设置
+要启用单个工具的自动追踪功能，设置LangSmith API 密钥：
+```
+os.environ["LANGSMITH_API_KEY"] = getpass.getpass("Enter your LangSmith API key: ")
+os.environ["LANGSMITH_TRACING"] = "true"
+```
+
+### 安装
+工具在langchain-community包里，需要安装:
+```
+pip install -qU  langchain-community
+```
+以及安装其他必要的依赖项，例如SQLAlchemy：
+```
+pip install -qU sqlalchemy requests
+```
+
+下面我们将使用 requests 库拉取 .sql 文件并创建一个内存中的 SQLite 数据库。请注意，这种方法虽然轻量级，但具有临时性且不是线程安全的。也可以按照说明将文件本地保存为 Chinook.db，并通过 db = SQLDatabase.from_uri("sqlite:///Chinook.db") 实例化数据库。
+
+```
+import sqlite3
+
+import requests
+from langchain_community.utilities.sql_database import SQLDatabase
+from sqlalchemy import create_engine
+from sqlalchemy.pool import StaticPool
+
+
+def get_engine_for_chinook_db():
+    """Pull sql file, populate in-memory database, and create engine."""
+    url = "https://raw.githubusercontent.com/lerocha/chinook-database/master/ChinookDatabase/DataSources/Chinook_Sqlite.sql"
+    response = requests.get(url)
+    sql_script = response.text
+
+    connection = sqlite3.connect(":memory:", check_same_thread=False)
+    connection.executescript(sql_script)
+    return create_engine(
+        "sqlite://",
+        creator=lambda: connection,
+        poolclass=StaticPool,
+        connect_args={"check_same_thread": False},
+    )
+
+
+engine = get_engine_for_chinook_db()
+
+db = SQLDatabase(engine)
+```
+
+创建一个大模型示例：
+```
+llm = init_chat_model(
+    model="doubao-1-5-pro-32k-250115",
+    model_provider="openai",
+    base_url="https://ark.cn-beijing.volces.com/api/v3",
+    api_key=os.environ.get("ARK_OPENAI_API_KEY"),
+)
+```
+
+实例化一个工具集:
+```
+from langchain_community.agent_toolkits.sql.toolkit import SQLDatabaseToolkit
+
+toolkit = SQLDatabaseToolkit(db=db, llm=llm)
+```
+
+### 在智能体中使用工具集
+接下来我们为一个简单的问答代理配备我们工具包中的工具。首先，我们获取一个相关的提示词并用其所需参数填充它：
+```
+from langchain_classic import hub
+
+prompt_template = hub.pull("langchain-ai/sql-agent-system-prompt")
+
+assert len(prompt_template.messages) == 1
+print(prompt_template.input_variables)
+
+system_message = prompt_template.format(dialect="SQLite", top_k=5)
+```
+
+实例化一个智能体：
+```
+from langchain.agents import create_agent
+
+agent = create_agent(llm, toolkit.get_tools(), system_prompt=system_message)
+```
+
+最后，进行查询：
+```
+example_query = "Which country's customers spent the most?"
+
+events = agent.stream(
+    {"messages": [("user", example_query)]},
+    stream_mode="values",
+)
+for event in events:
+    event["messages"][-1].pretty_print()
+```
+
+输出内容如下：
+
+```
+...
+================================== Ai Message ==================================
+
+The top 5 countries whose customers spent the most are as follows:
+| Country | TotalSpent |
+| ---- | ---- |
+| USA | 523.06 |
+| Canada | 303.96 |
+| France | 195.1 |
+| Brazil | 190.1 |
+| Germany | 156.48 |
+
+So, the customers from the USA spent the most.
+```
+
+### Langchain接入自定义工具
+
+除了使用LangChain的内部工具，我们还可以自行创建外部函数并将其封装为一个LangChain"链"可调用的tool组件。实现一个获取天气的智能体工具，具体的步骤如下：
+
+1. 心知天气注册及API key获取
+
+打开心知天气的[官网](https://www.seniverse.com/console)，注册登录并点击控制台:
+
+创建好密钥之后可以在后续使用。
+
+2. 编写验证API key代码 
+利用python requests库调用API获得天气情况（免费版的只能得到天气现象、天气现象代码和气温 3项数据）
+```
+import requests
+
+url = "https://api.seniverse.com/v3/weather/now.json"
+
+params = {
+    "key": "",  # 填写你的私钥
+    "location": "北京",  # 你要查询的地区可以用代号，拼音或者汉字，文档在官方下载，这里举例北京
+    "language": "zh-Hans",  # 中文简体
+    "unit": "c",  # 获取气温
+}
+
+response = requests.get(url, params=params)  # 发送get请求
+temperature = response.json()  # 接受消息中的json部分
+print(temperature['results'][0]['now'])  # 输出接收到的消息进行查看
+
+```
+
+3. 为了让大模型能够调用天气工具，需要将调用天气API封装成函数.
+
+```
+import requests
+
+def get_weather(loc):
+    url = "https://api.seniverse.com/v3/weather/now.json"
+    params = {
+        "key": "", #填写你的私钥
+        "location": loc,
+        "language": "zh-Hans",
+        "unit": "c",
+    }
+    response = requests.get(url, params=params)
+    temperature = response.json()
+    return temperature['results'][0]['now']
+
+```
+
+4.  让大模型理解函数, 构造Fuction Call
+准备好外部函数之后，非常重要的一步是将外部函数的信息以某种形式传输给大模型，让大模型理解函数的作用。大模型需要特定的字典格式对函数进行完整描述, 字典描述包括:
+- name:函数名称字符串
+- description: 描述函数功能的字符串，大模型选择函数的核心依据
+- parameters: 函数参数, 要求遵照JSON Schema格式输入，JSON Schema格式请参照[JSON Schema格式详解](https://json-schema.apifox.cn/)
+
+```
+get_weather_function = {
+    'name': 'get_weather',
+    'description': '查询即时天气函数，根据输入的城市名称，查询对应城市的实时天气',
+    'parameters': {
+        'type': 'object',
+        'properties': { #参数说明
+            'loc': {
+                'description': '城市名称',
+                'type': 'string'
+            }
+        },
+        'required': ['loc']  #必备参数
+    }
+}
+```
+
+完成对get_weather函数描述后，还需要将其加入tools列表，用于告知大模型可以使用哪些函数以及这些函数对应的描述，并在可用函数对象中记录一下：
+```
+tools = [    
+    {
+        "type": "function",
+        "function":get_weather_function
+    }
+]
+available_functions = {
+    'get_weather': get_weather
+}
+```
+
+5. 大模型调用Function Call
+接下来用大模型调用Function Call, 这里用的大模型是doubao-1-5-pro-32k。
+
+构造大模型：
+```
+llm = init_chat_model(
+    model="doubao-1-5-pro-32k-250115",
+    model_provider="openai",
+    base_url="https://ark.cn-beijing.volces.com/api/v3",
+    api_key=os.environ.get("ARK_OPENAI_API_KEY"),
+)
+```
+
+先试下不用Function Call, 让大模型查询天气的结果.
+
+```
+basic_qa_chain = model | StrOutputParser()
+question = "请帮我查询北京地区今日天气情况"
+result = basic_qa_chain.invoke(question)
+
+print(result)
+```
+
+大模型给出的输出如下：
+
+```
+我没办法直接获取实时的北京地区今日天气情况。不过你可以通过以下几种方式查询：
+
+天气类应用程序
+**彩云天气**：能提供精准的天气信息，包括逐小时预报、降水预报等，还会有天气雷达图展示降水动态。
+**墨迹天气**：除了基本的天气状况、温度、湿度等信息，还有生活指数，如穿衣指数、洗车指数等，方便安排日常生活。
+**中国天气通**：由中国气象局官方推出，数据权威可靠，有详细的气象预警信息。
+```
+
+可以看到，没有Function Call 功能，大模型是查询到实时天气的。
+
+将函数相关信息输入给大模型，需要额外设置两个参数，首先是tools参数, 用于申明外部函数库, 也就是我们上面定义的tools列表对象。其次是可选参数tool_choice参数，该参数用于控制模型对函数的选取，默认值为auto, 表示会根据用户提问自动选择要执行函数，若想让模型在本次执行特定函数不要自行挑选，需要给tool_choice参数赋予{"name":"functionname"}值，这时大模型就会从tools列表中选取函数名为functionname的函数执行。这里让模型自动挑选函数来执行:
+```
+basic_qa_chain = model
+question = "请帮我查询北京地区今日天气情况"
+result = basic_qa_chain.invoke(question, tools=tools, tool_choice="auto")
+
+print(result)
+```
+
+执行上面的代码, 输出如下：
+
+```
+content='用户需要查询北京地区今日天气情况，调用 get_weather 函数获取信息。' additional_kwargs={'refusal': None} response_metadata={'token_usage': {'completion_tokens': 69, 'prompt_tokens': 79, 'total_tokens': 148, 'completion_tokens_details': {'accepted_prediction_tokens': None, 'audio_tokens': None, 'reasoning_tokens': 0, 'rejected_prediction_tokens': None}, 'prompt_tokens_details': {'audio_tokens': None, 'cached_tokens': 0}}, 'model_provider': 'openai', 'model_name': 'doubao-1-5-pro-32k-250115', 'system_fingerprint': None, 'id': '021766661440617e598b1e7ef00194e20b378e3561cb7f3f2d394', 'service_tier': 'default', 'finish_reason': 'tool_calls', 'logprobs': None} id='lc_run--019b553a-43ee-76a1-9039-e51c3b831cc9-0' tool_calls=[{'name': 'get_weather', 'args': {'loc': '北京'}, 'id': 'call_jfncxiw8wf21j5h4jycfrolw', 'type': 'tool_call'}] usage_metadata={'input_tokens': 79, 'output_tokens': 69, 'total_tokens': 148, 'input_token_details': {'cache_read': 0}, 'output_token_details': {'reasoning': 0}}
+```
+
+可以看到，大模型输出了一个函数调用指令，调用了get_weather函数，参数为loc=北京。
+
+
+意大模型不会帮我们自动调用函数，它只会帮我们选择要调用的函数以及生成函数参数， 下一步将大模型生成的函数参数输入大模型选择的函数并执行。通过上面定义的available_functions对象找到具体的函数，并将大模型返回的参数传入（这里 ** 是一种便捷的参数传递方法，该方法会将字典中的每个key对应的value传输到同名参数位中）,可以看到天气函数成功执行:
+
+```
+# 获取函数名称
+function_name = result.tool_calls[0].function.name
+
+# 获得对应函数对象
+function_to_call = available_functions[function_name]
+
+# 获得执行函数所需参数
+function_args = json.loads(result.tool_calls[0].function.arguments)
+
+# 执行函数
+function_response = function_to_call(**function_args)
+
+print(function_response)
+```
+
+输出如下内容：
+```
+{'text': '晴', 'code': '1', 'temperature': '-1'}
+```
+上面的输出结果也就是知心天气查询结果，text为晴，code为1，temperature为-1摄氏度。
+
+在调用天气函数得到天气情况后，将天气结果传入mesages列表中并发送给大模型，让大模型理解上下文。函数执行结果的message是tool_message类型。
+
+将大模型关于选择函数的回复response_message内容解析后传入messages列表中。
+
+```
+print(response_message.model_dump())
+messages.append(response_message.model_dump()) 
+```
+
+上面的model_dump()输出的内容如下：
+```
+{
+	'content': '',
+	'refusal': None,
+	'role': 'assistant',
+	'annotations': None,
+	'audio': None,
+	'function_call': None,
+	'tool_calls': [{
+		'id': 'call_0_8feaa367-c274-4c84-830f-13b49358a231',
+		'function': {
+			'arguments': '{"loc":"北京"}',
+			'name': 'get_weather'
+		},
+		'type': 'function',
+		'index': 0
+	}]
+}
+```
+
+再将函数执行结果作为tool_message并与response_message关联后传入messages列表中:
+
+```
+messages.append({
+    "role": "tool",
+    "content": json.dumps(function_response), # 将回复的字典转化为json字符串
+    "tool_call_id": response_message.tool_calls[0].id # 将函数执行结果作为tool_message添加到messages中, 并关联返回执行函数内容的id
+})
+```
+
+接下来，再次调用大模型来围绕messages进行回答。需要注意的是，此时不再需要向模型重复提问，只需要简单的将我们已经准备好的messages 传给大模型。
+
+```
+second_response = model.invoke(messages)
+print(second_response.content)
+```
+
+下面看大模型的输出结果，很明显大模型接收到了函数执行的结果，并进一步处理得到输出，同时天气和气温的输出也是正确的。
+
