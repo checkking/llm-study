@@ -1257,7 +1257,7 @@ tools = toolkit.get_tools()
 ```
 #### Agent 决策逻辑
 使用支持 Tool Calling 的模型（如文心一言、GPT-4 或 Doubao 系列）来驱动 Agent。
-```
+```python
 from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
 
@@ -1302,3 +1302,86 @@ async def run_task(url):
 
 运行结果如图：
 ![运行结果](./imgs/chain10_img1.png)
+
+#### 增加支持导出解析的CSV内容
+为了实现支持将提取的新闻内容转成CSV格式，需要重新对代码进行组织。
+将过程拆解为两个明确的步骤：
+1. 抓取环节：利用 Playwright 获取网页纯文本。
+2. 处理环节：将文本交给 LLM 进行结构化总结并转换为 JSON，最后写入 CSV。
+
+先实现写入CSV逻辑：
+```python
+# 1. 定义 CSV 写入逻辑
+def save_to_csv(data: dict, filename="news_data.csv"):
+    file_exists = os.path.isfile(filename)
+    with open(filename, mode='a', newline='', encoding='utf-8-sig') as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            writer.writerow(['提炼标题', '总结内容', 'URL'])
+        writer.writerow([data.get('title'), data.get('summary'), data.get('url')])
+    return f"成功保存到 {filename}"
+```
+这里我们需要将新闻内容提炼出3个字段： 标题（titile）、总结内容（summary）、URL(url)。 为了实现大模型自动提炼这3个字段，需要编写提示词模板，如下：
+```python
+prompt = ChatPromptTemplate.from_template("""
+        你是一个新闻提取专家。以下是从网页抓取的原始文本内容：
+        ---
+        {page_content}
+        ---
+        请提取该网页的新闻标题和核心内容摘要。
+        必须以 JSON 格式输出，包含以下键：
+        {{
+            "title": "提炼的标题",
+            "summary": "100字以内的总结",
+            "url": "{url}"
+        }}
+        """)
+```
+构造构建串行链： 输入 -> 提取文本 -> 提示词 -> 模型 -> JSON解析:
+```
+chain = (
+            prompt 
+            | model 
+            | JsonOutputParser()
+        )
+```
+
+为了能访问浏览器，需要找到具体的工具：navigate 和 extract_text
+```python
+# 动态查找工具，增加容错
+def find_tool(names):
+    for name in names:
+        tool = next((t for t in tools if t.name == name), None)
+        if tool: return tool
+    return None
+
+navigate_tool = find_tool(["navigate_browser", "navigate"])
+# 这里适配可能的不同命名：extract_text 或 get_text
+extract_tool = find_tool(["extract_text", "get_text"])
+```
+接着就可以提取URL内容:
+```python
+target_url = "https://baijiahao.baidu.com/s?id=1852806076428347030"
+print(f"正在访问: {target_url}...")
+# 串行执行浏览器操作
+await navigate_tool.ainvoke({"url": target_url})
+raw_text = await extract_tool.ainvoke({})
+```
+提取出内容给后，交给LLM进行解析：
+```python
+print("正在进行 AI 总结...")
+result = await chain.ainvoke({
+    "page_content": raw_text[:8000], # 截断防止超长
+    "url": target_url
+})
+```
+
+最后，保存结构到CSV：
+```python
+status = save_to_csv(result)
+print(f"任务完成: {status}")
+print(f"解析内容: {result}")
+```
+
+完整代码见chain11.py.
+
