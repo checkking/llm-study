@@ -1,0 +1,10 @@
+langchain
+langchain-openai
+langchain-core
+langchain-community
+requests
+sqlalchemy
+playwright
+lxml
+beautifulsoup4
+reportlab

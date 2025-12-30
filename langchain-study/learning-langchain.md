@@ -1215,3 +1215,90 @@ final_message = result["messages"][-1]
 print(final_message.content)
 
 ```
+
+## LangChain操作浏览器
+在 LLM 应用开发中，传统的 API 调用往往受限于数据滞后性。通过将 Playwright 集成至 LangChain，我们可以赋予 Agent “操纵浏览器”的能力。这使得 Agent 能够执行动态网页渲染、绕过简单反爬虫机制、进行点击交互以及长网页内容提取。
+
+### 核心组件架构
+要构建一个稳定的浏览器代理，涉及以下三个核心层级：
+
+- 执行层 (Playwright): 负责底层的浏览器实例管理（Chromium/Firefox/WebKit），处理 JavaScript 渲染。
+
+- 工具层 (PlaywrightBrowserToolkit): 将 Playwright 的原子操作（如 Maps, click, extract_text）封装为 LangChain 可识别的 Tools。
+
+- 决策层 (LLM): 根据用户指令，决定何时调用哪个浏览器工具，并对抓取的内容进行理解和摘要。
+
+###  环境准备
+```
+pip install playwright  lxml langchain_community beautifulsoup4 reportlab
+playwright install
+```
+
+其中`playwright install`命令用于安装PlayWright的浏览器驱动程序，确保能够在LangChain中正常使用。下载的浏览器和内核包括Chromium（Chrome开源版浏览器内核）、Firefox、WebKit（苹果Safari使用的浏览器引擎），这些浏览器和内核将被下载到本地的`~/.cache/ms-playwright`目录下。
+
+
+### 关键技术实现
+以下是构建高效 Browser Agent 的核心步骤解析。
+#### 异步上下文管理
+为了避免在复杂的异步环境中（如 Jupyter Notebook 或 FastAPI）出现 Loop conflict（事件循环冲突），建议手动管理浏览器生命周期，而不是依赖 LangChain 内部默认启动。
+```python
+async with async_playwright() as p:
+    browser = await p.chromium.launch(headless=True)
+    # ... 后续逻辑
+    await browser.close()
+```
+#### 工具包初始化
+PlayWrightBrowserToolkit 是连接 LLM 与浏览器的桥梁。通过 from_browser 方法，我们可以直接注入现有的异步浏览器实例。
+```python
+from langchain_community.agent_toolkits import PlayWrightBrowserToolkit
+
+toolkit = PlayWrightBrowserToolkit.from_browser(async_browser=browser)
+tools = toolkit.get_tools()
+```
+#### Agent 决策逻辑
+使用支持 Tool Calling 的模型（如文心一言、GPT-4 或 Doubao 系列）来驱动 Agent。
+```
+from langchain.agents import create_agent
+from langchain.chat_models import init_chat_model
+
+# 初始化兼容 OpenAI 接口协议的模型
+model = init_chat_model(
+    model="doubao-1-5-pro-32k",
+    model_provider="openai",
+    base_url="https://ark.cn-beijing.volces.com/api/v3",
+    api_key="YOUR_API_KEY",
+)
+
+agent = create_agent(model=model, tools=tools, system_prompt=system_message)
+```
+
+#### 实战案例：网页内容提取与摘要
+以下代码展示了 Agent 如何接收一个 URL，自主决定调用 Maps_browser 和 extract_text 工具，最后返回处理结果。
+```python
+async def run_task(url):
+    # 构造请求
+    input_data = {
+        "messages": [("user", f"请访问 {url}，提取并总结其内容")]
+    }
+    
+    # 执行异步调用
+    result = await agent.ainvoke(input_data)
+    
+    # 提取回复
+    print(f"Agent 总结结果: {result['messages'][-1].content}")
+```
+
+#### 研发避坑指南（Best Practices）
+
+1. Headless 模式转换： 在本地调试阶段，建议设置 headless=False。这允许你实时观察 Agent 的操作（如它是否卡在验证码或弹窗上）。
+
+2. 上下文长度管理： 网页内容通常包含大量 HTML 标签，极易撑爆 LLM 的上下文窗口（Context Window）。建议使用 get_text 工具而非 get_content，或者配合 LangChain 的 Transformer 库对 HTML 进行预清理。
+
+3. 并发控制： Playwright 消耗内存较高，在生产环境中，建议通过浏览器实例池或 BrowserContext 来隔离不同用户的会话。
+
+4. 异步安全： 始终确保在 async 环境下运行，并使用 await 处理所有工具调用，否则会导致事件循环挂起。
+
+完整代码见chain10.py
+
+运行结果如图：
+![运行结果](./imgs/chain10_img1.png)
