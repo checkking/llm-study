@@ -1385,3 +1385,5 @@ print(f"解析内容: {result}")
 
 完整代码见chain11.py.
 
+运行结果如下：
+![运行结果](./imgs/chain11_img1.png)
