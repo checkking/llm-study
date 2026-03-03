@@ -1387,3 +1387,53 @@ print(f"解析内容: {result}")
 
 运行结果如下：
 ![运行结果](./imgs/chain11_img1.png)
+
+## ReAct 算法流程图
+
+### ReAct 算法概述
+
+ReAct（Reasoning + Acting）是一种将大语言模型的**推理能力**与**行动能力**相结合的智能体范式。
+它让 LLM 在每一步既能进行思考推理，又能执行实际操作（如调用搜索引擎、数据库等外部工具），并将工具返回的结果作为"观察"再次融入推理过程，形成一个 Thought → Action → Observation 的闭环循环，直到得出最终答案。
+
+### ReAct 核心循环
+
+```
+用户输入 (User Input)
+    ↓
+LLM 推理引擎 (Language Model Core)
+    ↓
+思考 (Thought)  ←──────────────────────────┐
+    ↓                                       │
+是否需要调用工具？                           │
+  ├── 是 (Yes) → 行动 (Action)             │
+  │                   ↓                    │
+  │              [外部工具]                  │
+  │       Search Engine / Database / API    │
+  │                   ↓                    │
+  │          观察环境反馈 (Observation) ────┘
+  │
+  └── 否 (No) → 最终输出结果 (Final Answer)
+```
+
+| 节点 | 说明 |
+|------|------|
+| **思考 (Thought)** | LLM 分析当前状态，规划下一步动作 |
+| **行动 (Action)** | LLM 生成工具调用指令（如搜索关键词、SQL 查询） |
+| **观察 (Observation)** | 接收外部工具返回的结果，并反馈给 LLM |
+| **外部工具** | Search Engine、Database、Calculator、API 等 |
+
+### ReAct 流程图
+
+下图展示了 ReAct 算法的完整闭环结构，包括外部工具（Search Engine、Database）与 Action / Observation 节点之间的数据流向：
+
+![ReAct 算法流程图](./imgs/react_flow.png)
+
+### 绘制流程图代码
+
+完整代码见 chain12.py，使用 matplotlib 绘制。运行方式：
+
+```bash
+pip install matplotlib
+python chain12.py
+# 生成 imgs/react_flow.png
+```
